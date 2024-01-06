@@ -1,7 +1,16 @@
 [package]
+authors = ["Nicolas Patry <patry.nicolas@protonmail.com>"]
 name = "bindgen_cuda"
 version = "0.1.0"
 edition = "2021"
+description = """
+Bindgen like interface to build cuda kernels to interact with within Rust.
+"""
+readme = "./README.md"
+license = "MIT"
+homepage = "https://github.com/Narsil/bindgen_cuda"
+repository = "https://github.com/Narsil/bindgen_cuda"
+documentation = "https://docs.rs/bindgen_cuda/"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
