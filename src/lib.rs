@@ -1,11 +1,15 @@
+#![deny(missing_docs)]
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use rayon::prelude::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+/// Error messages
 #[derive(Debug)]
 pub enum Error {}
 
+/// Core builder to setup the bindings options
 #[derive(Debug)]
 pub struct Builder {
     cuda_root: Option<PathBuf>,
@@ -30,8 +34,8 @@ impl Default for Builder {
         let out_dir = std::env::var("OUT_DIR").unwrap().into();
 
         let cuda_root = cuda_include_dir();
-        let kernel_paths = default_kernels().unwrap_or(vec![]);
-        let include_paths = default_include().unwrap_or(vec![]);
+        let kernel_paths = default_kernels().unwrap_or_default();
+        let include_paths = default_include().unwrap_or_default();
         let extra_args = vec![];
         let compute_cap = compute_cap().ok();
         Self {
@@ -45,6 +49,7 @@ impl Default for Builder {
     }
 }
 
+/// Helper struct to create a rust file when buildings PTX files.
 pub struct Bindings {
     write: bool,
     paths: Vec<PathBuf>,
@@ -68,20 +73,32 @@ fn default_include() -> Option<Vec<PathBuf>> {
 }
 
 impl Builder {
+    /// Setup the kernel paths. All path must be set at once and be valid files.
+    /// ```
+    /// let builder = Builder::default().kernel_paths(vec!["src/mykernel.cu"])
+    /// ```
     pub fn kernel_paths(mut self, paths: Vec<PathBuf>) -> Self {
         let inexistent_paths: Vec<_> = paths.iter().filter(|f| !f.exists()).collect();
-        if !inexistent_paths.is_empty(){
+        if !inexistent_paths.is_empty() {
             panic!("Kernels paths do not exist {inexistent_paths:?}");
         }
         self.kernel_paths = paths;
         self
     }
 
+    /// Setup the kernel paths. All path must be set at once and be valid files.
+    /// ```
+    /// let builder = Builder::default().kernel_paths(vec!["src/mykernel.cuh"])
+    /// ```
     pub fn include_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.include_paths = paths;
         self
     }
 
+    /// Setup the kernels with a glob.
+    /// ```
+    /// let builder = Builder::default().kernel_paths_glob("src/**/*.cu")
+    /// ```
     pub fn kernel_paths_glob(mut self, glob: &str) -> Self {
         self.kernel_paths = glob::glob(glob)
             .expect("Invalid blob")
@@ -90,6 +107,10 @@ impl Builder {
         self
     }
 
+    /// Setup the include files with a glob.
+    /// ```
+    /// let builder = Builder::default().kernel_paths_glob("src/**/*.cuh")
+    /// ```
     pub fn include_paths_glob(mut self, glob: &str) -> Self {
         self.include_paths = glob::glob(glob)
             .expect("Invalid blob")
@@ -98,16 +119,31 @@ impl Builder {
         self
     }
 
+    /// Modifies the output directory.
+    /// By default this is
+    /// [OUT_DIR](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)
+    /// ```
+    /// let builder = Builder::default().out_dir("out/")
+    /// ```
     pub fn out_dir<P: Into<PathBuf>>(mut self, out_dir: P) -> Self {
         self.out_dir = out_dir.into();
         self
     }
 
+    /// Sets up extra nvcc compile arguments.
+    /// ```
+    /// let builder = Builder::default().arg("--expt-relaxed-constexpr");
+    /// ```
     pub fn arg(mut self, arg: &'static str) -> Self {
         self.extra_args.push(arg);
         self
     }
 
+    /// Forces the cuda root to a specific directory.
+    /// By default all standard directories will be visited.
+    /// ```
+    /// let builder = Builder::default().cuda_root("/usr/local/cuda");
+    /// ```
     pub fn cuda_root<P>(&mut self, path: P)
     where
         P: Into<PathBuf>,
@@ -115,6 +151,12 @@ impl Builder {
         self.cuda_root = Some(path.into());
     }
 
+    /// Consumes the builder and create a lib in the out_dir.
+    /// It then needs to be linked against in your `build.rs`
+    /// ```
+    /// let builder = Builder::default().build_lib("libflash.a");
+    /// println!("cargo:rustc-link-lib=flash");
+    /// ```
     pub fn build_lib<P>(self, out_file: P)
     where
         P: Into<PathBuf>,
@@ -133,11 +175,10 @@ impl Builder {
             .collect();
         let out_modified: Result<_, _> = out_file.metadata().and_then(|m| m.modified());
         let should_compile = if let Ok(out_modified) = out_modified {
-            self.kernel_paths.iter()
-                .any(|entry| {
-                        let in_modified = entry.metadata().unwrap().modified().unwrap();
-                        in_modified.duration_since(out_modified).is_ok()
-                })
+            self.kernel_paths.iter().any(|entry| {
+                let in_modified = entry.metadata().unwrap().modified().unwrap();
+                in_modified.duration_since(out_modified).is_ok()
+            })
         } else {
             true
         };
@@ -196,6 +237,14 @@ impl Builder {
         }
     }
 
+    /// Consumes the builder and outputs 1 ptx file for each kernels
+    /// found.
+    /// This function returns [`Bindings`] which can then be unused
+    /// to create a rust source file that will include those kernels.
+    /// ```
+    /// let bindings = Builder::default().build_ptx();
+    /// bindings.write("src/lib.rs").unwrap();
+    /// ```
     pub fn build_ptx(self) -> Result<Bindings, Error> {
         let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
         let compute_cap = self.compute_cap.expect("Could not find compute_cap");
@@ -286,6 +335,8 @@ impl Builder {
 }
 
 impl Bindings {
+    /// Writes a helper rust file that will include the PTX sources as
+    /// `const KERNEL_NAME` making it easier to interact with the PTX sources.
     pub fn write<P>(&self, out: P) -> Result<(), Error>
     where
         P: AsRef<Path>,
