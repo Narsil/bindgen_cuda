@@ -1,5 +1,9 @@
 # Bindgen Cuda
 
+[![Latest version](https://img.shields.io/crates/v/bindgen_cuda.svg)](https://crates.io/crates/bindgen_cuda)
+[![Documentation](https://docs.rs/bindgen_cuda/badge.svg)](https://docs.rs/bindgen_cuda)
+![License](https://img.shields.io/crates/l/bindgen_cuda.svg)
+
 Similar crate than [bindgen](https://github.com/rust-lang/rust-bindgen) in philosophy.
 It will help create automatic bindgen to cuda kernels source files and make them easier to use
 directly from Rust.
