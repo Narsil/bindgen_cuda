@@ -31,6 +31,7 @@ impl Default for Builder {
             .num_threads(num_cpus)
             .build_global()
             .unwrap();
+
         let out_dir = std::env::var("OUT_DIR").unwrap().into();
 
         let cuda_root = cuda_include_dir();
@@ -74,10 +75,11 @@ fn default_include() -> Option<Vec<PathBuf>> {
 
 impl Builder {
     /// Setup the kernel paths. All path must be set at once and be valid files.
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().kernel_paths(vec!["src/mykernel.cu"]);
     /// ```
-    /// let builder = Builder::default().kernel_paths(vec!["src/mykernel.cu"])
-    /// ```
-    pub fn kernel_paths(mut self, paths: Vec<PathBuf>) -> Self {
+    pub fn kernel_paths<P: Into<PathBuf>>(mut self, paths: Vec<P>) -> Self {
+        let paths: Vec<_> = paths.into_iter().map(|p| p.into()).collect();
         let inexistent_paths: Vec<_> = paths.iter().filter(|f| !f.exists()).collect();
         if !inexistent_paths.is_empty() {
             panic!("Kernels paths do not exist {inexistent_paths:?}");
@@ -87,17 +89,17 @@ impl Builder {
     }
 
     /// Setup the kernel paths. All path must be set at once and be valid files.
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().include_paths(vec!["src/mykernel.cuh"]);
     /// ```
-    /// let builder = Builder::default().kernel_paths(vec!["src/mykernel.cuh"])
-    /// ```
-    pub fn include_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.include_paths = paths;
+    pub fn include_paths<P: Into<PathBuf>>(mut self, paths: Vec<P>) -> Self {
+        self.include_paths = paths.into_iter().map(|p| p.into()).collect();
         self
     }
 
     /// Setup the kernels with a glob.
-    /// ```
-    /// let builder = Builder::default().kernel_paths_glob("src/**/*.cu")
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().kernel_paths_glob("src/**/*.cu");
     /// ```
     pub fn kernel_paths_glob(mut self, glob: &str) -> Self {
         self.kernel_paths = glob::glob(glob)
@@ -108,8 +110,8 @@ impl Builder {
     }
 
     /// Setup the include files with a glob.
-    /// ```
-    /// let builder = Builder::default().kernel_paths_glob("src/**/*.cuh")
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().kernel_paths_glob("src/**/*.cuh");
     /// ```
     pub fn include_paths_glob(mut self, glob: &str) -> Self {
         self.include_paths = glob::glob(glob)
@@ -122,8 +124,8 @@ impl Builder {
     /// Modifies the output directory.
     /// By default this is
     /// [OUT_DIR](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)
-    /// ```
-    /// let builder = Builder::default().out_dir("out/")
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().out_dir("out/");
     /// ```
     pub fn out_dir<P: Into<PathBuf>>(mut self, out_dir: P) -> Self {
         self.out_dir = out_dir.into();
@@ -131,8 +133,8 @@ impl Builder {
     }
 
     /// Sets up extra nvcc compile arguments.
-    /// ```
-    /// let builder = Builder::default().arg("--expt-relaxed-constexpr");
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
     /// ```
     pub fn arg(mut self, arg: &'static str) -> Self {
         self.extra_args.push(arg);
@@ -141,8 +143,8 @@ impl Builder {
 
     /// Forces the cuda root to a specific directory.
     /// By default all standard directories will be visited.
-    /// ```
-    /// let builder = Builder::default().cuda_root("/usr/local/cuda");
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().cuda_root("/usr/local/cuda");
     /// ```
     pub fn cuda_root<P>(&mut self, path: P)
     where
@@ -153,8 +155,8 @@ impl Builder {
 
     /// Consumes the builder and create a lib in the out_dir.
     /// It then needs to be linked against in your `build.rs`
-    /// ```
-    /// let builder = Builder::default().build_lib("libflash.a");
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().build_lib("libflash.a");
     /// println!("cargo:rustc-link-lib=flash");
     /// ```
     pub fn build_lib<P>(self, out_file: P)
@@ -241,8 +243,8 @@ impl Builder {
     /// found.
     /// This function returns [`Bindings`] which can then be unused
     /// to create a rust source file that will include those kernels.
-    /// ```
-    /// let bindings = Builder::default().build_ptx();
+    /// ```no_run
+    /// let bindings = bindgen_cuda::Builder::default().build_ptx().unwrap();
     /// bindings.write("src/lib.rs").unwrap();
     /// ```
     pub fn build_ptx(self) -> Result<Bindings, Error> {

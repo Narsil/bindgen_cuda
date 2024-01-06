@@ -9,7 +9,7 @@ directly from Rust.
 Let's say you have a file
 
 `src/cuda.cu`
-```
+```cuda
 __global__ void cuda_hello(){
     printf("Hello World from GPU!\n");
 }
@@ -23,7 +23,7 @@ cargo add --build bindgen_cuda
 
 And then create this `build.rs`
 
-```
+```no_run
 fn main() {
     let builder = bindgen_cuda::Builder::default();
     let bindings = builder.build_ptx().unwrap();
@@ -33,7 +33,7 @@ fn main() {
 
 This will create a src file containing the following code:
 
-```
+```ignore
 pub const CUDA: &str = include_str!(concat!(env!("OUT_DIR"), "/cuda.ptx"));
 ```
 
@@ -44,7 +44,7 @@ Alternatively you can build a static library that you can link against in build.
 
 `src/cuda.cu`
 
-```
+```cuda
 __global__ void cuda_hello(){
     printf("Hello World from GPU!\n");
 }
@@ -58,10 +58,10 @@ int run() {
 
 Then write the `build.rs`:
 
-```
+```no_run
 fn main() {
     let builder = bindgen_cuda::Builder::default();
-    builder.build_lib("libcuda.a").unwrap();
+    builder.build_lib("libcuda.a");
     println!("cargo:rustc-link-lib=cuda");
 }
 ```
@@ -69,9 +69,9 @@ fn main() {
 Which you can then interface through FFI in `src/lib.rs`:
 
 
-```
+```no_run
 extern "C" {
-    fn cuda_hello(){}
+    fn cuda_hello();
 }
 fn main(){
     unsafe{ cuda_hello();}
