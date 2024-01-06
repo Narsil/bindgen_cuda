@@ -22,17 +22,20 @@ pub struct Builder {
 
 impl Default for Builder {
     fn default() -> Self {
+        // Use only physical cores for rayon.
+        // Builds can be super consuming and exhaust resources quite fast
+        // like when building flash attention kernels
         let num_cpus = std::env::var("RAYON_NUM_THREADS").map_or_else(
             |_| num_cpus::get_physical(),
-            |s| usize::from_str(&s).unwrap(),
+            |s| usize::from_str(&s).expect("RAYON_NUM_THREADS is not set to a valid integer"),
         );
 
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus)
             .build_global()
-            .unwrap();
+            .expect("build rayon global threadpool");
 
-        let out_dir = std::env::var("OUT_DIR").unwrap().into();
+        let out_dir = std::env::var("OUT_DIR").expect("Expected OUT_DIR environement variable to be present, is this running within `build.rs`?").into();
 
         let cuda_root = cuda_include_dir();
         let kernel_paths = default_kernels().unwrap_or_default();
@@ -170,7 +173,10 @@ impl Builder {
             .kernel_paths
             .iter()
             .map(|f| {
-                let mut obj_file = out_dir.join(f.file_name().unwrap());
+                let mut obj_file = out_dir.join(
+                    f.file_name()
+                        .expect("kernels paths should include a filename"),
+                );
                 obj_file.set_extension("o");
                 (f, obj_file)
             })
@@ -178,7 +184,11 @@ impl Builder {
         let out_modified: Result<_, _> = out_file.metadata().and_then(|m| m.modified());
         let should_compile = if let Ok(out_modified) = out_modified {
             self.kernel_paths.iter().any(|entry| {
-                let in_modified = entry.metadata().unwrap().modified().unwrap();
+                let in_modified = entry
+                    .metadata()
+                    .expect("kernel {entry} should exist")
+                    .modified()
+                    .expect("kernel modified to be accessible");
                 in_modified.duration_since(out_modified).is_ok()
             })
         } else {
@@ -193,7 +203,7 @@ impl Builder {
                 command
                     .arg(format!("--gpu-architecture=sm_{compute_cap}"))
                     .arg("-c")
-                    .args(["-o", obj_file.to_str().unwrap()])
+                    .args(["-o", obj_file.to_str().expect("valid outfile")])
                     .args(["--default-stream", "per-thread"])
                     .args(&self.extra_args);
                 if let Ok(ccbin_path) = &ccbin_env {
@@ -205,7 +215,7 @@ impl Builder {
                 let output = command
                     .spawn()
                     .expect("failed spawning nvcc")
-                    .wait_with_output().unwrap();
+                    .wait_with_output().expect("capture nvcc output");
                 if !output.status.success() {
                     panic!(
                         "nvcc error while executing compiling: {:?}\n\n# stdout\n{:#}\n\n# stderr\n{:#}",
@@ -216,18 +226,21 @@ impl Builder {
                 }
                 Ok(())
             })
-            .collect::<Result<(), std::io::Error>>().unwrap();
+            .collect::<Result<(), std::io::Error>>().expect("compile files correctly");
             let obj_files = cu_files.iter().map(|c| c.1.clone()).collect::<Vec<_>>();
             let mut command = std::process::Command::new("nvcc");
             command
                 .arg("--lib")
-                .args(["-o", out_file.to_str().unwrap()])
+                .args([
+                    "-o",
+                    out_file.to_str().expect("library file {out_file} to exist"),
+                ])
                 .args(obj_files);
             let output = command
                 .spawn()
                 .expect("failed spawning nvcc")
                 .wait_with_output()
-                .unwrap();
+                .expect("Run nvcc");
             if !output.status.success() {
                 panic!(
                     "nvcc error while linking: {:?}\n\n# stdout\n{:#}\n\n# stderr\n{:#}",
@@ -256,22 +269,28 @@ impl Builder {
         );
         let out_dir = self.out_dir;
 
-        let mut include_directories = self.include_paths;
-        for path in &mut include_directories {
+        let mut include_paths = self.include_paths;
+        for path in &mut include_paths {
             println!("cargo:rerun-if-changed={}", path.display());
-            let destination = out_dir.join(path.file_name().unwrap());
-            std::fs::copy(path.clone(), destination).unwrap();
+            let destination =
+                out_dir.join(path.file_name().expect("include path to have filename"));
+            std::fs::copy(path.clone(), destination).expect("copy include headers");
             // remove the filename from the path so it's just the directory
             path.pop();
         }
 
-        include_directories.sort();
-        include_directories.dedup();
+        include_paths.sort();
+        include_paths.dedup();
 
         #[allow(unused)]
-        let include_options: Vec<String> = include_directories
+        let include_options: Vec<String> = include_paths
             .into_iter()
-            .map(|s| "-I".to_string() + &s.into_os_string().into_string().unwrap())
+            .map(|s| {
+                "-I".to_string()
+                    + &s.into_os_string()
+                        .into_string()
+                        .expect("include option to be valid string")
+            })
             .collect::<Vec<_>>();
 
         let ccbin_env = std::env::var("NVCC_CCBIN");
@@ -282,11 +301,11 @@ impl Builder {
                 println!("cargo:rerun-if-changed={}", p.display());
                 let mut output = p.clone();
                 output.set_extension("ptx");
-                let output_filename = std::path::Path::new(&out_dir).to_path_buf().join("out").with_file_name(output.file_name().unwrap());
+                let output_filename = std::path::Path::new(&out_dir).to_path_buf().join("out").with_file_name(output.file_name().expect("kernel to have a filename"));
 
-                let ignore = if output_filename.exists() {
-                    let out_modified = output_filename.metadata().unwrap().modified().unwrap();
-                    let in_modified = p.metadata().unwrap().modified().unwrap();
+                let ignore = if let Ok(metadata) = output_filename.metadata() {
+                    let out_modified = metadata.modified().expect("modified to be accessible");
+                    let in_modified = p.metadata().expect("input to have metadata").modified().expect("input metadata to be accessible");
                     out_modified.duration_since(in_modified).is_ok()
                 } else {
                     false
@@ -314,8 +333,8 @@ impl Builder {
             .collect::<Vec<_>>();
 
         let ptx_paths: Vec<PathBuf> = glob::glob(&format!("{0}/**/*.ptx", out_dir.display()))
-            .unwrap()
-            .map(|p| p.unwrap())
+            .expect("valid glob")
+            .map(|p| p.expect("valid path for PTX"))
             .collect();
         // We should rewrite `src/lib.rs` only if there are some newly compiled kernels, or removed
         // some old ones
@@ -344,9 +363,13 @@ impl Bindings {
         P: AsRef<Path>,
     {
         if self.write {
-            let mut file = std::fs::File::create(out).unwrap();
+            let mut file = std::fs::File::create(out).expect("Create lib in {out}");
             for kernel_path in &self.paths {
-                let name = kernel_path.file_stem().unwrap().to_str().unwrap();
+                let name = kernel_path
+                    .file_stem()
+                    .expect("kernel to have stem")
+                    .to_str()
+                    .expect("kernel path to be valid");
                 file.write_all(
                 format!(
                     r#"pub const {}: &str = include_str!(concat!(env!("OUT_DIR"), "/{}.ptx"));"#,
@@ -354,9 +377,9 @@ impl Bindings {
                     name
                 )
                 .as_bytes(),
-            )
-            .unwrap();
-                file.write_all(&[b'\n']).unwrap();
+                )
+                .expect("write to {out}");
+                file.write_all(&[b'\n']).expect("write to {out}");
             }
         }
         Ok(())
@@ -435,7 +458,7 @@ fn compute_cap() -> Result<usize, Error> {
                 .arg("--list-gpu-code")
                 .output()
                 .expect("`nvcc` failed. Ensure that you have CUDA installed and that `nvcc` is in your PATH.");
-        let out = std::str::from_utf8(&out.stdout).unwrap();
+        let out = std::str::from_utf8(&out.stdout).expect("valid utf-8 nvcc output");
 
         let out = out.lines().collect::<Vec<&str>>();
         let mut codes = Vec::with_capacity(out.len());
