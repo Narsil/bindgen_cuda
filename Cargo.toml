@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 glob = "0.3.1"
+num_cpus = "1.16.0"
+rayon = "1.8.0"
