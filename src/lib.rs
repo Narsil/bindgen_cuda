@@ -207,7 +207,6 @@ impl Builder {
             })
             .collect();
         let out_modified: Result<_, _> = out_file.metadata().and_then(|m| m.modified());
-        println!("cargo:warning={:?}", self.kernel_paths);
         let should_compile = if let Ok(out_modified) = out_modified {
             let kernel_modified = self.kernel_paths.iter().any(|entry| {
                 let in_modified = entry
