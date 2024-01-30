@@ -14,6 +14,7 @@ pub enum Error {}
 pub struct Builder {
     cuda_root: Option<PathBuf>,
     kernel_paths: Vec<PathBuf>,
+    watch: Vec<PathBuf>,
     include_paths: Vec<PathBuf>,
     compute_cap: Option<usize>,
     out_dir: PathBuf,
@@ -41,10 +42,12 @@ impl Default for Builder {
         let kernel_paths = default_kernels().unwrap_or_default();
         let include_paths = default_include().unwrap_or_default();
         let extra_args = vec![];
+        let watch = vec![];
         let compute_cap = compute_cap().ok();
         Self {
             cuda_root,
             kernel_paths,
+            watch,
             include_paths,
             extra_args,
             compute_cap,
@@ -88,6 +91,25 @@ impl Builder {
             panic!("Kernels paths do not exist {inexistent_paths:?}");
         }
         self.kernel_paths = paths;
+        self
+    }
+
+    /// Setup the paths that the lib depend on but does not need to build
+    /// ```no_run
+    /// let builder =
+    /// bindgen_cuda::Builder::default().watch(std::fs::read_dir("kernels/").unwrap());
+    /// ```
+    pub fn watch<T, P>(mut self, paths: T) -> Self
+    where
+        T: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let paths: Vec<_> = paths.into_iter().map(|p| p.into()).collect();
+        let inexistent_paths: Vec<_> = paths.iter().filter(|f| !f.exists()).collect();
+        if !inexistent_paths.is_empty() {
+            panic!("Kernels paths do not exist {inexistent_paths:?}");
+        }
+        self.watch = paths;
         self
     }
 
@@ -169,6 +191,9 @@ impl Builder {
         let out_file = out_file.into();
         let compute_cap = self.compute_cap.expect("Failed to get compute_cap");
         let out_dir = self.out_dir;
+        for path in &self.watch {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         let cu_files: Vec<_> = self
             .kernel_paths
             .iter()
@@ -182,15 +207,25 @@ impl Builder {
             })
             .collect();
         let out_modified: Result<_, _> = out_file.metadata().and_then(|m| m.modified());
+        println!("cargo:warning={:?}", self.kernel_paths);
         let should_compile = if let Ok(out_modified) = out_modified {
-            self.kernel_paths.iter().any(|entry| {
+            let kernel_modified = self.kernel_paths.iter().any(|entry| {
                 let in_modified = entry
                     .metadata()
                     .expect("kernel {entry} should exist")
                     .modified()
                     .expect("kernel modified to be accessible");
                 in_modified.duration_since(out_modified).is_ok()
-            })
+            });
+            let watch_modified = self.watch.iter().any(|entry| {
+                let in_modified = entry
+                    .metadata()
+                    .expect("watched file {entry} should exist")
+                    .modified()
+                    .expect("watch modified should be accessible");
+                in_modified.duration_since(out_modified).is_ok()
+            });
+            kernel_modified || watch_modified
         } else {
             true
         };
@@ -295,6 +330,9 @@ impl Builder {
 
         let ccbin_env = std::env::var("NVCC_CCBIN");
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
+        for path in &self.watch {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         let children = self.kernel_paths
             .par_iter()
             .flat_map(|p| {
