@@ -1,6 +1,8 @@
 #![deny(missing_docs)]
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use rayon::prelude::*;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -198,10 +200,16 @@ impl Builder {
             .kernel_paths
             .iter()
             .map(|f| {
-                let mut obj_file = out_dir.join(
-                    f.file_name()
-                        .expect("kernels paths should include a filename"),
-                );
+                let mut s = DefaultHasher::new();
+                f.display().to_string().hash(&mut s);
+                let hash = s.finish();
+                let mut obj_file = out_dir.join(format!(
+                    "{}-{:x}",
+                    f.file_stem()
+                        .expect("kernels paths should include a filename")
+                        .to_string_lossy(),
+                    hash
+                ));
                 obj_file.set_extension("o");
                 (f, obj_file)
             })
