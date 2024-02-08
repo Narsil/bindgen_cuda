@@ -33,10 +33,9 @@ impl Default for Builder {
             |s| usize::from_str(&s).expect("RAYON_NUM_THREADS is not set to a valid integer"),
         );
 
-        rayon::ThreadPoolBuilder::new()
+        let _ = rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus)
-            .build_global()
-            .expect("build rayon global threadpool");
+            .build_global();
 
         let out_dir = std::env::var("OUT_DIR").expect("Expected OUT_DIR environement variable to be present, is this running within `build.rs`?").into();
 
