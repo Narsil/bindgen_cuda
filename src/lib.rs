@@ -99,7 +99,7 @@ impl Builder {
     /// Setup the paths that the lib depend on but does not need to build
     /// ```no_run
     /// let builder =
-    /// bindgen_cuda::Builder::default().watch(std::fs::read_dir("kernels/").unwrap());
+    /// bindgen_cuda::Builder::default().watch(vec!["kernels/"]);
     /// ```
     pub fn watch<T, P>(mut self, paths: T) -> Self
     where
