@@ -305,9 +305,10 @@ impl Builder {
     pub fn build_ptx(self) -> Result<Bindings, Error> {
         let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
         let compute_cap = self.compute_cap.expect("Could not find compute_cap");
+        let cuda_include_dir = cuda_root.join("include");
         println!(
             "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
-            cuda_root.join("include").display()
+            cuda_include_dir.display()
         );
         let out_dir = self.out_dir;
 
@@ -325,7 +326,7 @@ impl Builder {
         include_paths.dedup();
 
         #[allow(unused)]
-        let include_options: Vec<String> = include_paths
+        let mut include_options: Vec<String> = include_paths
             .into_iter()
             .map(|s| {
                 "-I".to_string()
@@ -334,6 +335,7 @@ impl Builder {
                         .expect("include option to be valid string")
             })
             .collect::<Vec<_>>();
+        include_options.push(format!("-I{}", cuda_include_dir.display()));
 
         let ccbin_env = std::env::var("NVCC_CCBIN");
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
@@ -371,7 +373,7 @@ impl Builder {
                             .args(["-ccbin", ccbin_path]);
                     }
                     command.arg(p);
-                    Some((p, command.spawn()
+                    Some((p, format!("{command:?}"), command.spawn()
                         .expect("nvcc failed to start. Ensure that you have CUDA installed and that `nvcc` is in your PATH.").wait_with_output()))
                 }
             })
@@ -384,11 +386,11 @@ impl Builder {
         // We should rewrite `src/lib.rs` only if there are some newly compiled kernels, or removed
         // some old ones
         let write = !children.is_empty() || self.kernel_paths.len() < ptx_paths.len();
-        for (kernel_path, child) in children {
+        for (kernel_path, command, child) in children {
             let output = child.expect("nvcc failed to run. Ensure that you have CUDA installed and that `nvcc` is in your PATH.");
             assert!(
                 output.status.success(),
-                "nvcc error while compiling {kernel_path:?}:\n\n# stdout\n{:#}\n\n# stderr\n{:#}",
+                "nvcc error while compiling {kernel_path:?}:\n\n# CLI {command} \n\n# stdout\n{:#}\n\n# stderr\n{:#}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
