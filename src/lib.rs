@@ -186,13 +186,13 @@ impl Builder {
     /// let builder = bindgen_cuda::Builder::default().build_lib("libflash.a");
     /// println!("cargo:rustc-link-lib=flash");
     /// ```
-    pub fn build_lib<P>(self, out_file: P)
+    pub fn build_lib<P>(&self, out_file: P)
     where
         P: Into<PathBuf>,
     {
         let out_file = out_file.into();
         let compute_cap = self.compute_cap.expect("Failed to get compute_cap");
-        let out_dir = self.out_dir;
+        let out_dir = self.out_dir.clone();
         for path in &self.watch {
             println!("cargo:rerun-if-changed={}", path.display());
         }
@@ -302,17 +302,20 @@ impl Builder {
     /// let bindings = bindgen_cuda::Builder::default().build_ptx().unwrap();
     /// bindings.write("src/lib.rs").unwrap();
     /// ```
-    pub fn build_ptx(self) -> Result<Bindings, Error> {
-        let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
+    pub fn build_ptx(&self) -> Result<Bindings, Error> {
+        let mut cuda_include_dir = PathBuf::from("/usr/local/cuda/include");
+        if let Some(cuda_root) = &self.cuda_root {
+            cuda_include_dir = cuda_root.join("include");
+            println!(
+                "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
+                cuda_include_dir.display()
+            );
+        };
         let compute_cap = self.compute_cap.expect("Could not find compute_cap");
-        let cuda_include_dir = cuda_root.join("include");
-        println!(
-            "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
-            cuda_include_dir.display()
-        );
-        let out_dir = self.out_dir;
 
-        let mut include_paths = self.include_paths;
+        let out_dir = self.out_dir.clone();
+
+        let mut include_paths = self.include_paths.clone();
         for path in &mut include_paths {
             println!("cargo:rerun-if-changed={}", path.display());
             let destination =
@@ -397,7 +400,7 @@ impl Builder {
         }
         Ok(Bindings {
             write,
-            paths: self.kernel_paths,
+            paths: self.kernel_paths.clone(),
         })
     }
 }
