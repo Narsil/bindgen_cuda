@@ -14,6 +14,7 @@ pub enum Error {}
 /// Core builder to setup the bindings options
 #[derive(Debug)]
 pub struct Builder {
+    thread_pool: rayon::ThreadPool,
     cuda_root: Option<PathBuf>,
     kernel_paths: Vec<PathBuf>,
     watch: Vec<PathBuf>,
@@ -33,10 +34,17 @@ impl Default for Builder {
             |s| usize::from_str(&s).expect("RAYON_NUM_THREADS is not set to a valid integer"),
         );
 
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus)
-            .build_global()
-            .expect("build rayon global threadpool");
+        Self::with_num_threads(num_cpus)
+    }
+}
+
+impl Builder {
+    /// Create builder that uses `num_threads` for running build commands.
+    pub fn with_num_threads(num_threads: usize) -> Self {
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("Failed to build rayon threadpool");
 
         let out_dir = std::env::var("OUT_DIR").expect("Expected OUT_DIR environement variable to be present, is this running within `build.rs`?").into();
 
@@ -47,6 +55,7 @@ impl Default for Builder {
         let watch = vec![];
         let compute_cap = compute_cap().ok();
         Self {
+            thread_pool,
             cuda_root,
             kernel_paths,
             watch,
@@ -238,7 +247,7 @@ impl Builder {
         };
         let ccbin_env = std::env::var("NVCC_CCBIN");
         if should_compile {
-            cu_files
+            let iter = cu_files
             .par_iter()
             .map(|(cu_file, obj_file)| {
                 let mut command = std::process::Command::new("nvcc");
@@ -267,8 +276,10 @@ impl Builder {
                     )
                 }
                 Ok(())
-            })
-            .collect::<Result<(), std::io::Error>>().expect("compile files correctly");
+            });
+            self.thread_pool
+                .install(move || iter.collect::<Result<(), std::io::Error>>())
+                .expect("compile files correctly");
             let obj_files = cu_files.iter().map(|c| c.1.clone()).collect::<Vec<_>>();
             let mut command = std::process::Command::new("nvcc");
             command
@@ -376,8 +387,8 @@ impl Builder {
                     Some((p, format!("{command:?}"), command.spawn()
                         .expect("nvcc failed to start. Ensure that you have CUDA installed and that `nvcc` is in your PATH.").wait_with_output()))
                 }
-            })
-            .collect::<Vec<_>>();
+            });
+        let children = self.thread_pool.install(|| children.collect::<Vec<_>>());
 
         let ptx_paths: Vec<PathBuf> = glob::glob(&format!("{0}/**/*.ptx", out_dir.display()))
             .expect("valid glob")
