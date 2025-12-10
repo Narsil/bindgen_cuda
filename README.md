@@ -43,6 +43,27 @@ pub const CUDA: &str = include_str!(concat!(env!("OUT_DIR"), "/cuda.ptx"));
 
 You can then use the PTX directly in your rust code with a library like [cudarc](https://github.com/coreylowman/cudarc/).
 
+## CUBIN inclusion
+For pre-compiled CUDA binaries (useful for devices without PTX JIT support), you can use `build_cubin()` instead:
+
+`build.rs`
+
+```no_run
+fn main() {
+    let builder = bindgen_cuda::Builder::default();
+    let bindings = builder.build_cubin().unwrap();
+    bindings.write("src/lib.rs");
+}
+```
+
+This will create a src file containing:
+
+```ignore
+pub const CUDA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cuda.cubin"));
+```
+
+Note: CUBIN format produces `&[u8]` (binary) instead of `&str` (text). CUBIN is architecture-specific and requires matching GPU compute capability.
+
 ## Raw cuda calls
 Alternatively you can build a static library that you can link against in build.rs in order to call cuda directly with the c code.
 
