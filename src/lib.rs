@@ -383,6 +383,7 @@ impl Builder {
                             .args(["-ccbin", ccbin_path]);
                     }
                     command.arg(p);
+                    println!("cargo:warning=nvcc command: {:?}", command);
                     Some((p, format!("{command:?}"), command.spawn()
                         .expect("nvcc failed to start. Ensure that you have CUDA installed and that `nvcc` is in your PATH.").wait_with_output()))
                 }
