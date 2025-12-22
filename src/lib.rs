@@ -335,18 +335,6 @@ impl Builder {
         include_paths.sort();
         include_paths.dedup();
 
-        #[allow(unused)]
-        let mut include_options: Vec<String> = include_paths
-            .into_iter()
-            .map(|s| {
-                "-I".to_string()
-                    + &s.into_os_string()
-                        .into_string()
-                        .expect("include option to be valid string")
-            })
-            .collect::<Vec<_>>();
-        include_options.push(format!("-I{}", cuda_include_dir.display()));
-
         let ccbin_env = std::env::var("NVCC_CCBIN");
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
         for path in &self.watch {
@@ -375,8 +363,11 @@ impl Builder {
                         .arg("--ptx")
                         .args(["--default-stream", "per-thread"])
                         .args(["--output-directory", &out_dir.display().to_string()])
-                        .args(&self.extra_args)
-                        .args(&include_options);
+                        .args(&self.extra_args);
+                    for include in &include_paths {
+                        command.arg("-I").arg(include);
+                    }
+                    command.arg("-I").arg(&cuda_include_dir);
                     if let Ok(ccbin_path) = &ccbin_env {
                         command
                             .arg("-allow-unsupported-compiler")
@@ -444,18 +435,6 @@ impl Builder {
         include_paths.sort();
         include_paths.dedup();
 
-        #[allow(unused)]
-        let mut include_options: Vec<String> = include_paths
-            .into_iter()
-            .map(|s| {
-                "-I".to_string()
-                    + &s.into_os_string()
-                        .into_string()
-                        .expect("include option to be valid string")
-            })
-            .collect::<Vec<_>>();
-        include_options.push(format!("-I{}", cuda_include_dir.display()));
-
         let ccbin_env = std::env::var("NVCC_CCBIN");
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
         for path in &self.watch {
@@ -484,8 +463,11 @@ impl Builder {
                         .arg("--cubin")
                         .args(["--default-stream", "per-thread"])
                         .args(["--output-directory", &out_dir.display().to_string()])
-                        .args(&self.extra_args)
-                        .args(&include_options);
+                        .args(&self.extra_args);
+                    for include in &include_paths {
+                        command.arg("-I").arg(include);
+                    }
+                    command.arg("-I").arg(&cuda_include_dir);
                     if let Ok(ccbin_path) = &ccbin_env {
                         command
                             .arg("-allow-unsupported-compiler")
