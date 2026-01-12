@@ -33,10 +33,13 @@ impl Default for Builder {
             |s| usize::from_str(&s).expect("RAYON_NUM_THREADS is not set to a valid integer"),
         );
 
-        rayon::ThreadPoolBuilder::new()
+        if rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus)
             .build_global()
-            .expect("build rayon global threadpool");
+            .is_err()
+        {
+            // Already initialized, that's fine - can happen when building multiple targets
+        }
 
         let out_dir = std::env::var("OUT_DIR").expect("Expected OUT_DIR environement variable to be present, is this running within `build.rs`?").into();
 
@@ -178,6 +181,17 @@ impl Builder {
         P: Into<PathBuf>,
     {
         self.cuda_root = Some(path.into());
+    }
+
+    /// Sets the CUDA compute capability manually.
+    /// By default, the compute capability is detected from `nvidia-smi` or the
+    /// `CUDA_COMPUTE_CAP` environment variable.
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default().compute_cap(86); // For RTX 3090
+    /// ```
+    pub fn compute_cap(mut self, compute_cap: usize) -> Self {
+        self.compute_cap = Some(compute_cap);
+        self
     }
 
     /// Consumes the builder and create a lib in the out_dir.
