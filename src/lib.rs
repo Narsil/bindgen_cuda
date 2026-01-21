@@ -85,6 +85,14 @@ fn default_include() -> Option<Vec<PathBuf>> {
 }
 
 impl Builder {
+    /// Force to use a given compute capability
+    pub fn set_compute_cap(&mut self, cap: usize) {
+        self.compute_cap = Some(cap);
+    }
+
+    pub fn get_compute_cap(&self) -> Option<usize> {
+        self.compute_cap
+    }
     /// Setup the kernel paths. All path must be set at once and be valid files.
     /// ```no_run
     /// let builder = bindgen_cuda::Builder::default().kernel_paths(vec!["src/mykernel.cu"]);
@@ -200,13 +208,13 @@ impl Builder {
     /// let builder = bindgen_cuda::Builder::default().build_lib("libflash.a");
     /// println!("cargo:rustc-link-lib=flash");
     /// ```
-    pub fn build_lib<P>(self, out_file: P)
+    pub fn build_lib<P>(&self, out_file: P)
     where
         P: Into<PathBuf>,
     {
         let out_file = out_file.into();
         let compute_cap = self.compute_cap.expect("Failed to get compute_cap");
-        let out_dir = self.out_dir;
+        let out_dir = self.out_dir.clone();
         for path in &self.watch {
             println!("cargo:rerun-if-changed={}", path.display());
         }
@@ -251,11 +259,16 @@ impl Builder {
             true
         };
         let ccbin_env = std::env::var("NVCC_CCBIN");
+        let nvcc_binary = if std::path::Path::new("/usr/local/cuda/bin/nvcc").exists() {
+            "/usr/local/cuda/bin/nvcc"
+        } else {
+            "nvcc"
+        };
         if should_compile {
             cu_files
             .par_iter()
             .map(|(cu_file, obj_file)| {
-                let mut command = std::process::Command::new("nvcc");
+                let mut command = std::process::Command::new(nvcc_binary);
                 command
                     .arg(format!("--gpu-architecture=sm_{compute_cap}"))
                     .arg("-c")
@@ -284,7 +297,7 @@ impl Builder {
             })
             .collect::<Result<(), std::io::Error>>().expect("compile files correctly");
             let obj_files = cu_files.iter().map(|c| c.1.clone()).collect::<Vec<_>>();
-            let mut command = std::process::Command::new("nvcc");
+            let mut command = std::process::Command::new(nvcc_binary);
             command
                 .arg("--lib")
                 .args([
@@ -316,17 +329,20 @@ impl Builder {
     /// let bindings = bindgen_cuda::Builder::default().build_ptx().unwrap();
     /// bindings.write("src/lib.rs").unwrap();
     /// ```
-    pub fn build_ptx(self) -> Result<Bindings, Error> {
-        let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
+    pub fn build_ptx(&self) -> Result<Bindings, Error> {
+        let mut cuda_include_dir = PathBuf::from("/usr/local/cuda/include");
+        if let Some(cuda_root) = &self.cuda_root {
+            cuda_include_dir = cuda_root.join("include");
+            println!(
+                "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
+                cuda_include_dir.display()
+            );
+        };
         let compute_cap = self.compute_cap.expect("Could not find compute_cap");
-        let cuda_include_dir = cuda_root.join("include");
-        println!(
-            "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
-            cuda_include_dir.display()
-        );
-        let out_dir = self.out_dir;
 
-        let mut include_paths = self.include_paths;
+        let out_dir = self.out_dir.clone();
+
+        let mut include_paths = self.include_paths.clone();
         for path in &mut include_paths {
             println!("cargo:rerun-if-changed={}", path.display());
             let destination =
@@ -352,6 +368,11 @@ impl Builder {
         include_options.push(format!("-I{}", cuda_include_dir.display()));
 
         let ccbin_env = std::env::var("NVCC_CCBIN");
+        let nvcc_binary = if std::path::Path::new("/usr/local/cuda/bin/nvcc").exists() {
+            "/usr/local/cuda/bin/nvcc"
+        } else {
+            "nvcc"
+        };
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
         for path in &self.watch {
             println!("cargo:rerun-if-changed={}", path.display());
@@ -374,7 +395,7 @@ impl Builder {
                 if ignore {
                     None
                 } else {
-                    let mut command = std::process::Command::new("nvcc");
+                    let mut command = std::process::Command::new(nvcc_binary);
                     command.arg(format!("--gpu-architecture=sm_{compute_cap}"))
                         .arg("--ptx")
                         .args(["--default-stream", "per-thread"])
@@ -411,7 +432,7 @@ impl Builder {
         }
         Ok(Bindings {
             write,
-            paths: self.kernel_paths,
+            paths: self.kernel_paths.clone(),
         })
     }
 }
@@ -512,10 +533,14 @@ fn compute_cap() -> Result<usize, Error> {
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={cap}");
         cap
     };
-
+    let nvcc_binary = if std::path::Path::new("/usr/local/cuda/bin/nvcc").exists() {
+        "/usr/local/cuda/bin/nvcc"
+    } else {
+        "nvcc"
+    };
     // Grab available GPU codes from nvcc and select the highest one
     let (supported_nvcc_codes, max_nvcc_code) = {
-        let out = std::process::Command::new("nvcc")
+        let out = std::process::Command::new(nvcc_binary)
                 .arg("--list-gpu-code")
                 .output()
                 .expect("`nvcc` failed. Ensure that you have CUDA installed and that `nvcc` is in your PATH.");
