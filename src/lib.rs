@@ -82,6 +82,14 @@ fn default_include() -> Option<Vec<PathBuf>> {
 }
 
 impl Builder {
+    /// Force to use a given compute capability
+    pub fn set_compute_cap(&mut self, cap: usize) {
+        self.compute_cap = Some(cap);
+    }
+
+    pub fn get_compute_cap(&self) -> Option<usize> {
+        self.compute_cap
+    }
     /// Setup the kernel paths. All path must be set at once and be valid files.
     /// ```no_run
     /// let builder = bindgen_cuda::Builder::default().kernel_paths(vec!["src/mykernel.cu"]);
