@@ -61,10 +61,20 @@ impl Default for Builder {
     }
 }
 
-/// Helper struct to create a rust file when buildings PTX files.
+/// Module format for CUDA kernels
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleFormat {
+    /// PTX format - intermediate representation (text)
+    Ptx,
+    /// CUBIN format - pre-compiled binary
+    Cubin,
+}
+
+/// Helper struct to create a rust file when building PTX or CUBIN files.
 pub struct Bindings {
     write: bool,
     paths: Vec<PathBuf>,
+    format: ModuleFormat,
 }
 
 fn default_kernels() -> Option<Vec<PathBuf>> {
@@ -308,9 +318,9 @@ impl Builder {
         }
     }
 
-    /// Consumes the builder and outputs 1 ptx file for each kernels
+    /// Consumes the builder and outputs 1 ptx file for each kernel
     /// found.
-    /// This function returns [`Bindings`] which can then be unused
+    /// This function returns [`Bindings`] which can then be used
     /// to create a rust source file that will include those kernels.
     /// ```no_run
     /// let bindings = bindgen_cuda::Builder::default().build_ptx().unwrap();
@@ -338,18 +348,6 @@ impl Builder {
 
         include_paths.sort();
         include_paths.dedup();
-
-        #[allow(unused)]
-        let mut include_options: Vec<String> = include_paths
-            .into_iter()
-            .map(|s| {
-                "-I".to_string()
-                    + &s.into_os_string()
-                        .into_string()
-                        .expect("include option to be valid string")
-            })
-            .collect::<Vec<_>>();
-        include_options.push(format!("-I{}", cuda_include_dir.display()));
 
         let ccbin_env = std::env::var("NVCC_CCBIN");
         println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
@@ -379,14 +377,18 @@ impl Builder {
                         .arg("--ptx")
                         .args(["--default-stream", "per-thread"])
                         .args(["--output-directory", &out_dir.display().to_string()])
-                        .args(&self.extra_args)
-                        .args(&include_options);
+                        .args(&self.extra_args);
+                    for include in &include_paths {
+                        command.arg("-I").arg(include);
+                    }
+                    command.arg("-I").arg(&cuda_include_dir);
                     if let Ok(ccbin_path) = &ccbin_env {
                         command
                             .arg("-allow-unsupported-compiler")
                             .args(["-ccbin", ccbin_path]);
                     }
                     command.arg(p);
+                    // println!("cargo:warning=nvcc command: {:?}", command);
                     Some((p, format!("{command:?}"), command.spawn()
                         .expect("nvcc failed to start. Ensure that you have CUDA installed and that `nvcc` is in your PATH.").wait_with_output()))
                 }
@@ -412,13 +414,114 @@ impl Builder {
         Ok(Bindings {
             write,
             paths: self.kernel_paths,
+            format: ModuleFormat::Ptx,
+        })
+    }
+
+    /// Consumes the builder and outputs 1 cubin file for each kernel
+    /// found.
+    /// This function returns [`Bindings`] which can then be used
+    /// to create a rust source file that will include those kernels.
+    /// ```no_run
+    /// let bindings = bindgen_cuda::Builder::default().build_cubin().unwrap();
+    /// bindings.write("src/lib.rs").unwrap();
+    /// ```
+    pub fn build_cubin(self) -> Result<Bindings, Error> {
+        let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
+        let compute_cap = self.compute_cap.expect("Could not find compute_cap");
+        let cuda_include_dir = cuda_root.join("include");
+        println!(
+            "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
+            cuda_include_dir.display()
+        );
+        let out_dir = self.out_dir;
+
+        let mut include_paths = self.include_paths;
+        for path in &mut include_paths {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let destination =
+                out_dir.join(path.file_name().expect("include path to have filename"));
+            std::fs::copy(path.clone(), destination).expect("copy include headers");
+            // remove the filename from the path so it's just the directory
+            path.pop();
+        }
+
+        include_paths.sort();
+        include_paths.dedup();
+
+        let ccbin_env = std::env::var("NVCC_CCBIN");
+        println!("cargo:rerun-if-env-changed=NVCC_CCBIN");
+        for path in &self.watch {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        let children = self.kernel_paths
+            .par_iter()
+            .flat_map(|p| {
+                println!("cargo:rerun-if-changed={}", p.display());
+                let mut output = p.clone();
+                output.set_extension("cubin");
+                let output_filename = std::path::Path::new(&out_dir).to_path_buf().join("out").with_file_name(output.file_name().expect("kernel to have a filename"));
+
+                let ignore = if let Ok(metadata) = output_filename.metadata() {
+                    let out_modified = metadata.modified().expect("modified to be accessible");
+                    let in_modified = p.metadata().expect("input to have metadata").modified().expect("input metadata to be accessible");
+                    out_modified.duration_since(in_modified).is_ok()
+                } else {
+                    false
+                };
+                if ignore {
+                    None
+                } else {
+                    let mut command = std::process::Command::new("nvcc");
+                    command.arg(format!("--gpu-architecture=sm_{compute_cap}"))
+                        .arg("--cubin")
+                        .args(["--default-stream", "per-thread"])
+                        .args(["--output-directory", &out_dir.display().to_string()])
+                        .args(&self.extra_args);
+                    for include in &include_paths {
+                        command.arg("-I").arg(include);
+                    }
+                    command.arg("-I").arg(&cuda_include_dir);
+                    if let Ok(ccbin_path) = &ccbin_env {
+                        command
+                            .arg("-allow-unsupported-compiler")
+                            .args(["-ccbin", ccbin_path]);
+                    }
+                    command.arg(p);
+                    // println!("cargo:warning=nvcc command: {:?}", command);
+                    Some((p, format!("{command:?}"), command.spawn()
+                        .expect("nvcc failed to start. Ensure that you have CUDA installed and that `nvcc` is in your PATH.").wait_with_output()))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let cubin_paths: Vec<PathBuf> = glob::glob(&format!("{0}/**/*.cubin", out_dir.display()))
+            .expect("valid glob")
+            .map(|p| p.expect("valid path for CUBIN"))
+            .collect();
+        // We should rewrite `src/lib.rs` only if there are some newly compiled kernels, or removed
+        // some old ones
+        let write = !children.is_empty() || self.kernel_paths.len() < cubin_paths.len();
+        for (kernel_path, command, child) in children {
+            let output = child.expect("nvcc failed to run. Ensure that you have CUDA installed and that `nvcc` is in your PATH.");
+            assert!(
+                output.status.success(),
+                "nvcc error while compiling {kernel_path:?}:\n\n# CLI {command} \n\n# stdout\n{:#}\n\n# stderr\n{:#}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(Bindings {
+            write,
+            paths: self.kernel_paths,
+            format: ModuleFormat::Cubin,
         })
     }
 }
 
 impl Bindings {
-    /// Writes a helper rust file that will include the PTX sources as
-    /// `const KERNEL_NAME` making it easier to interact with the PTX sources.
+    /// Writes a helper rust file that will include the PTX or CUBIN sources as
+    /// `const KERNEL_NAME` making it easier to interact with the kernel sources.
     pub fn write<P>(&self, out: P) -> Result<(), Error>
     where
         P: AsRef<Path>,
@@ -431,16 +534,23 @@ impl Bindings {
                     .expect("kernel to have stem")
                     .to_str()
                     .expect("kernel path to be valid");
-                file.write_all(
-                format!(
-                    r#"pub const {}: &str = include_str!(concat!(env!("OUT_DIR"), "/{}.ptx"));"#,
-                    name.to_uppercase().replace('.', "_"),
-                    name
-                )
-                .as_bytes(),
-                )
-                .expect("write to {out}");
-                file.write_all(&[b'\n']).expect("write to {out}");
+                
+                let line = match self.format {
+                    ModuleFormat::Ptx => format!(
+                        r#"pub const {}: &str = include_str!(concat!(env!("OUT_DIR"), "/{}.ptx"));"#,
+                        name.to_uppercase().replace('.', "_"),
+                        name
+                    ),
+                    ModuleFormat::Cubin => format!(
+                        r#"pub const {}: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/{}.cubin"));"#,
+                        name.to_uppercase().replace('.', "_"),
+                        name
+                    ),
+                };
+                
+                file.write_all(line.as_bytes())
+                    .expect("write to {out}");
+                file.write_all(b"\n").expect("write to {out}");
             }
         }
         Ok(())
