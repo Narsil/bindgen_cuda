@@ -256,6 +256,8 @@ impl Builder {
             .par_iter()
             .map(|(cu_file, obj_file)| {
                 let mut command = std::process::Command::new("nvcc");
+                #[cfg(windows)]
+                command.args(["-Xcompiler", "/Zc:preprocessor", "-DNOGDI"]);
                 command
                     .arg(format!("--gpu-architecture=sm_{compute_cap}"))
                     .arg("-c")
@@ -375,6 +377,8 @@ impl Builder {
                     None
                 } else {
                     let mut command = std::process::Command::new("nvcc");
+                    #[cfg(windows)]
+                    command.args(["-Xcompiler", "/Zc:preprocessor", "-DNOGDI"]);
                     command.arg(format!("--gpu-architecture=sm_{compute_cap}"))
                         .arg("--ptx")
                         .args(["--default-stream", "per-thread"])
