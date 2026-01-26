@@ -491,9 +491,13 @@ fn compute_cap() -> Result<usize, Error> {
     // Try to parse compute caps from env
     let compute_cap = if let Ok(compute_cap_str) = std::env::var("CUDA_COMPUTE_CAP") {
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={compute_cap_str}");
-        compute_cap_str
-            .parse::<usize>()
-            .expect("Could not parse code")
+        match compute_cap_str.parse::<usize>() {
+            Ok(c) => c,
+            // Handle letter-suffixed compute cap such as 121a/f
+            Err(_) => compute_cap_str[..compute_cap_str.len() - 1]
+                .parse::<usize>()
+                .expect("Could not parse code")
+        }
     } else {
         // Use nvidia-smi to get the current compute cap
         let out = std::process::Command::new("nvidia-smi")
@@ -508,8 +512,13 @@ fn compute_cap() -> Result<usize, Error> {
             .next()
             .expect("missing line in stdout")
             .replace('.', "");
-        let cap = cap.parse::<usize>().expect("cannot parse as int {cap}");
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={cap}");
+        let cap = match cap.parse::<usize>() {
+            Ok(c) => c,
+            Err(_) => compute_cap_str[..compute_cap_str.len() - 1]
+                .parse::<usize>()
+                .expect("Could not parse as int {cap}")
+        }
         cap
     };
 
