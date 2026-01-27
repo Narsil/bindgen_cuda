@@ -423,8 +423,9 @@ impl Bindings {
     where
         P: AsRef<Path>,
     {
+        let out = out.as_ref();
         if self.write {
-            let mut file = std::fs::File::create(out).expect("Create lib in {out}");
+            let mut file = std::fs::File::create(out).expect(&format!("Create lib in {out:?}"));
             for kernel_path in &self.paths {
                 let name = kernel_path
                     .file_stem()
