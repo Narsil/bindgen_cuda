@@ -500,7 +500,7 @@ fn compute_cap() -> Result<usize, Error> {
                 .arg("--query-gpu=compute_cap")
                 .arg("--format=csv")
                 .output()
-                .expect("`nvidia-smi` failed. Ensure that you have CUDA installed and that `nvidia-smi` is in your PATH.");
+                .expect("`nvidia-smi` failed. Ensure that you have CUDA installed and that `nvidia-smi` is in your PATH or alternatively set the CUDA_COMPUTE_CAP environment variable.");
         let out = std::str::from_utf8(&out.stdout).expect("stdout is not a utf8 string");
         let mut lines = out.lines();
         assert_eq!(lines.next().expect("missing line in stdout"), "compute_cap");
