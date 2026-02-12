@@ -454,7 +454,10 @@ fn cuda_include_dir() -> Option<PathBuf> {
         "CUDA_ROOT",
         "CUDA_TOOLKIT_ROOT_DIR",
         "CUDNN_LIB",
+        "Path",  // e.g. Windows
+        "LD_LIBRARY_PATH",  // e.g. Linux
     ];
+    
     #[allow(unused)]
     let env_vars = env_vars
         .into_iter()
@@ -468,6 +471,7 @@ fn cuda_include_dir() -> Option<PathBuf> {
         "/opt/cuda",
         "/usr/lib/cuda",
         "C:/Program Files/NVIDIA GPU Computing Toolkit",
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0",
         "C:/CUDA",
     ];
 
