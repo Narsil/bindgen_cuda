@@ -1,0 +1,13 @@
+[package]
+name = "simple"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib"]
+
+[build-dependencies]
+bindgen_cuda = { version = "0.1.5", path = "../.." }
+
+[dependencies]
+cudarc = { version = "0.13", default-features = false, features = ["cuda-version-from-build-system", "dynamic-linking", "driver", "runtime"] }

@@ -339,7 +339,6 @@ impl Builder {
         include_paths.sort();
         include_paths.dedup();
 
-        #[allow(unused)]
         let mut include_options: Vec<String> = include_paths
             .into_iter()
             .map(|s| {
@@ -455,7 +454,6 @@ fn cuda_include_dir() -> Option<PathBuf> {
         "CUDA_TOOLKIT_ROOT_DIR",
         "CUDNN_LIB",
     ];
-    #[allow(unused)]
     let env_vars = env_vars
         .into_iter()
         .map(std::env::var)
@@ -473,13 +471,8 @@ fn cuda_include_dir() -> Option<PathBuf> {
 
     println!("cargo:info={roots:?}");
 
-    #[allow(unused)]
     let roots = roots.into_iter().map(Into::<PathBuf>::into);
 
-    #[cfg(feature = "ci-check")]
-    let root: PathBuf = "ci".into();
-
-    #[cfg(not(feature = "ci-check"))]
     env_vars
         .chain(roots)
         .find(|path| path.join("include").join("cuda.h").is_file())
