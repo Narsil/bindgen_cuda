@@ -16,6 +16,7 @@ documentation = "https://docs.rs/bindgen_cuda/"
 
 [dependencies]
 glob = "0.3.1"
+libloading = "0.8"
 num_cpus = "1.16.0"
 rayon = "1.8.0"
 

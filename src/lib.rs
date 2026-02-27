@@ -11,6 +11,9 @@ use std::str::FromStr;
 #[derive(Debug)]
 pub enum Error {}
 
+/// The default set of compute capabilities used when `CUDA_COMPUTE_CAPS=all`.
+pub const DEFAULT_COMPUTE_CAPS: &[usize] = &[75, 80, 86, 89, 90];
+
 /// Core builder to setup the bindings options
 #[derive(Debug)]
 pub struct Builder {
@@ -19,6 +22,7 @@ pub struct Builder {
     watch: Vec<PathBuf>,
     include_paths: Vec<PathBuf>,
     compute_cap: Option<usize>,
+    compute_caps: Option<Vec<usize>>,
     out_dir: PathBuf,
     extra_args: Vec<&'static str>,
 }
@@ -48,7 +52,15 @@ impl Default for Builder {
         let include_paths = default_include().unwrap_or_default();
         let extra_args = vec![];
         let watch = vec![];
-        let compute_cap = compute_cap().ok();
+
+        // Priority: CUDA_COMPUTE_CAPS (plural) > CUDA_COMPUTE_CAP (singular) > auto-detect
+        let compute_caps = resolve_compute_caps_env();
+        let compute_cap = if compute_caps.is_none() {
+            compute_cap().ok()
+        } else {
+            None
+        };
+
         Self {
             cuda_root,
             kernel_paths,
@@ -56,6 +68,7 @@ impl Default for Builder {
             include_paths,
             extra_args,
             compute_cap,
+            compute_caps,
             out_dir,
         }
     }
@@ -183,7 +196,7 @@ impl Builder {
         self.cuda_root = Some(path.into());
     }
 
-    /// Sets the CUDA compute capability manually.
+    /// Sets the CUDA compute capability manually (single architecture).
     /// By default, the compute capability is detected from `nvidia-smi` or the
     /// `CUDA_COMPUTE_CAP` environment variable.
     /// ```no_run
@@ -191,11 +204,51 @@ impl Builder {
     /// ```
     pub fn compute_cap(mut self, compute_cap: usize) -> Self {
         self.compute_cap = Some(compute_cap);
+        self.compute_caps = None;
         self
+    }
+
+    /// Sets multiple CUDA compute capabilities for multi-architecture builds.
+    ///
+    /// When multiple capabilities are set, `build_lib()` produces a fat binary with
+    /// SASS for each architecture plus a PTX fallback for forward compatibility.
+    /// `build_ptx()` compiles PTX for the lowest capability (forward-compatible via JIT).
+    ///
+    /// ```no_run
+    /// let builder = bindgen_cuda::Builder::default()
+    ///     .compute_caps(&[75, 80, 86, 89]); // Turing through Ada Lovelace
+    /// ```
+    pub fn compute_caps(mut self, caps: &[usize]) -> Self {
+        let mut caps = caps.to_vec();
+        caps.sort();
+        caps.dedup();
+        assert!(!caps.is_empty(), "compute_caps must not be empty");
+        self.compute_caps = Some(caps);
+        self.compute_cap = None;
+        self
+    }
+
+    /// Returns the resolved list of compute capabilities.
+    /// Prefers `compute_caps` (multiple) over `compute_cap` (single).
+    fn resolved_caps(&self) -> Vec<usize> {
+        if let Some(caps) = &self.compute_caps {
+            return caps.clone();
+        }
+        if let Some(cap) = self.compute_cap {
+            return vec![cap];
+        }
+        panic!(
+            "No compute capabilities specified. Set CUDA_COMPUTE_CAP or CUDA_COMPUTE_CAPS \
+             environment variable, or call .compute_cap() / .compute_caps() on the builder."
+        );
     }
 
     /// Consumes the builder and create a lib in the out_dir.
     /// It then needs to be linked against in your `build.rs`
+    ///
+    /// When multiple compute capabilities are configured, produces a fat binary
+    /// with `-gencode` flags for each architecture plus a PTX fallback.
+    ///
     /// ```no_run
     /// let builder = bindgen_cuda::Builder::default().build_lib("libflash.a");
     /// println!("cargo:rustc-link-lib=flash");
@@ -205,7 +258,7 @@ impl Builder {
         P: Into<PathBuf>,
     {
         let out_file = out_file.into();
-        let compute_cap = self.compute_cap.expect("Failed to get compute_cap");
+        let caps = self.resolved_caps();
         let out_dir = self.out_dir;
         for path in &self.watch {
             println!("cargo:rerun-if-changed={}", path.display());
@@ -252,37 +305,48 @@ impl Builder {
         };
         let ccbin_env = std::env::var("NVCC_CCBIN");
         if should_compile {
+            // Generate architecture flags based on single vs multi-arch
+            let arch_args = if caps.len() == 1 {
+                // Single architecture: preserve existing --gpu-architecture behavior
+                vec![format!("--gpu-architecture=sm_{}", caps[0])]
+            } else {
+                // Multi-architecture: -gencode for each CC + PTX fallback for highest
+                gencode_args(&caps)
+            };
+
             cu_files
-            .par_iter()
-            .map(|(cu_file, obj_file)| {
-                let mut command = std::process::Command::new("nvcc");
-                command
-                    .arg(format!("--gpu-architecture=sm_{compute_cap}"))
-                    .arg("-c")
-                    .args(["-o", obj_file.to_str().expect("valid outfile")])
-                    .args(["--default-stream", "per-thread"])
-                    .args(&self.extra_args);
-                if let Ok(ccbin_path) = &ccbin_env {
+                .par_iter()
+                .map(|(cu_file, obj_file)| {
+                    let mut command = std::process::Command::new("nvcc");
                     command
-                        .arg("-allow-unsupported-compiler")
-                        .args(["-ccbin", ccbin_path]);
-                }
-                command.arg(cu_file);
-                let output = command
-                    .spawn()
-                    .expect("failed spawning nvcc")
-                    .wait_with_output().expect("capture nvcc output");
-                if !output.status.success() {
-                    panic!(
-                        "nvcc error while executing compiling: {:?}\n\n# stdout\n{:#}\n\n# stderr\n{:#}",
-                        &command,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    )
-                }
-                Ok(())
-            })
-            .collect::<Result<(), std::io::Error>>().expect("compile files correctly");
+                        .args(&arch_args)
+                        .arg("-c")
+                        .args(["-o", obj_file.to_str().expect("valid outfile")])
+                        .args(["--default-stream", "per-thread"])
+                        .args(&self.extra_args);
+                    if let Ok(ccbin_path) = &ccbin_env {
+                        command
+                            .arg("-allow-unsupported-compiler")
+                            .args(["-ccbin", ccbin_path]);
+                    }
+                    command.arg(cu_file);
+                    let output = command
+                        .spawn()
+                        .expect("failed spawning nvcc")
+                        .wait_with_output()
+                        .expect("capture nvcc output");
+                    if !output.status.success() {
+                        panic!(
+                            "nvcc error while executing compiling: {:?}\n\n# stdout\n{:#}\n\n# stderr\n{:#}",
+                            &command,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        )
+                    }
+                    Ok(())
+                })
+                .collect::<Result<(), std::io::Error>>()
+                .expect("compile files correctly");
             let obj_files = cu_files.iter().map(|c| c.1.clone()).collect::<Vec<_>>();
             let mut command = std::process::Command::new("nvcc");
             command
@@ -308,8 +372,12 @@ impl Builder {
         }
     }
 
-    /// Consumes the builder and outputs 1 ptx file for each kernels
-    /// found.
+    /// Consumes the builder and outputs 1 ptx file for each kernels found.
+    ///
+    /// When multiple compute capabilities are configured, PTX is compiled for
+    /// the lowest capability in the set (forward-compatible via JIT on all
+    /// higher architectures).
+    ///
     /// This function returns [`Bindings`] which can then be unused
     /// to create a rust source file that will include those kernels.
     /// ```no_run
@@ -317,8 +385,10 @@ impl Builder {
     /// bindings.write("src/lib.rs").unwrap();
     /// ```
     pub fn build_ptx(self) -> Result<Bindings, Error> {
+        let caps = self.resolved_caps();
+        // For PTX, use the lowest CC (forward-compatible via driver JIT)
+        let ptx_cap = *caps.iter().min().unwrap();
         let cuda_root = self.cuda_root.expect("Could not find CUDA in standard locations, set it manually using Builder().set_cuda_root(...)");
-        let compute_cap = self.compute_cap.expect("Could not find compute_cap");
         let cuda_include_dir = cuda_root.join("include");
         println!(
             "cargo:rustc-env=CUDA_INCLUDE_DIR={}",
@@ -375,7 +445,7 @@ impl Builder {
                     None
                 } else {
                     let mut command = std::process::Command::new("nvcc");
-                    command.arg(format!("--gpu-architecture=sm_{compute_cap}"))
+                    command.arg(format!("--gpu-architecture=sm_{ptx_cap}"))
                         .arg("--ptx")
                         .args(["--default-stream", "per-thread"])
                         .args(["--output-directory", &out_dir.display().to_string()])
@@ -447,6 +517,81 @@ impl Bindings {
     }
 }
 
+/// Generate `-gencode` flags for multi-architecture builds.
+/// Produces SASS for each capability plus a PTX fallback for the highest.
+fn gencode_args(caps: &[usize]) -> Vec<String> {
+    let mut args = Vec::new();
+    let max_cap = *caps.iter().max().expect("caps must not be empty");
+    for &cap in caps {
+        args.push(format!("-gencode=arch=compute_{cap},code=sm_{cap}"));
+    }
+    // PTX fallback for forward compatibility with GPUs newer than our highest SASS
+    args.push(format!(
+        "-gencode=arch=compute_{max_cap},code=compute_{max_cap}"
+    ));
+    args
+}
+
+/// Detect GPU compute capability via the CUDA driver API.
+///
+/// Dynamically loads `libcuda.so.1` (Linux) or `nvcuda.dll` (Windows) and queries
+/// the first GPU's compute capability using `cuInit` + `cuDeviceGetAttribute`.
+/// This is the same approach as `cuda-diagnostic::probe_device`, without the
+/// heavy candle-core dependency.
+///
+/// Returns `None` if the driver can't be loaded or the query fails (e.g., no GPU,
+/// CI without driver, cross-compilation).
+fn detect_cc_from_cuda_driver() -> Option<usize> {
+    // CUDA driver API constants
+    const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
+    const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
+    const CUDA_SUCCESS: i32 = 0;
+
+    let lib_name = if cfg!(target_os = "windows") {
+        "nvcuda.dll"
+    } else {
+        "libcuda.so.1"
+    };
+
+    type CuInit = unsafe extern "C" fn(u32) -> i32;
+    type CuDeviceGet = unsafe extern "C" fn(*mut i32, i32) -> i32;
+    type CuDeviceGetAttribute = unsafe extern "C" fn(*mut i32, i32, i32) -> i32;
+
+    unsafe {
+        let lib = libloading::Library::new(lib_name).ok()?;
+        let cu_init: libloading::Symbol<CuInit> = lib.get(b"cuInit").ok()?;
+        if cu_init(0) != CUDA_SUCCESS {
+            return None;
+        }
+        let cu_device_get: libloading::Symbol<CuDeviceGet> = lib.get(b"cuDeviceGet").ok()?;
+        let mut dev: i32 = 0;
+        if cu_device_get(&mut dev, 0) != CUDA_SUCCESS {
+            return None;
+        }
+        let cu_attr: libloading::Symbol<CuDeviceGetAttribute> =
+            lib.get(b"cuDeviceGetAttribute").ok()?;
+        let mut major: i32 = 0;
+        let mut minor: i32 = 0;
+        if cu_attr(
+            &mut major,
+            CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+            dev,
+        ) != CUDA_SUCCESS
+        {
+            return None;
+        }
+        if cu_attr(
+            &mut minor,
+            CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+            dev,
+        ) != CUDA_SUCCESS
+        {
+            return None;
+        }
+        Some((major * 10 + minor) as usize)
+    }
+}
+
 fn cuda_include_dir() -> Option<PathBuf> {
     // NOTE: copied from cudarc build.rs.
     let env_vars = [
@@ -485,6 +630,91 @@ fn cuda_include_dir() -> Option<PathBuf> {
         .find(|path| path.join("include").join("cuda.h").is_file())
 }
 
+/// Query nvcc for the list of supported GPU architecture codes.
+fn supported_nvcc_codes() -> (Vec<usize>, usize) {
+    let out = std::process::Command::new("nvcc")
+        .arg("--list-gpu-code")
+        .output()
+        .expect(
+            "`nvcc` failed. Ensure that you have CUDA installed and that `nvcc` is in your PATH.",
+        );
+    let out = std::str::from_utf8(&out.stdout).expect("valid utf-8 nvcc output");
+
+    let out = out.lines().collect::<Vec<&str>>();
+    let mut codes = Vec::with_capacity(out.len());
+    for code in out {
+        let code = code.split('_').collect::<Vec<&str>>();
+        if !code.is_empty() && code.contains(&"sm") {
+            if let Ok(num) = code[1].parse::<usize>() {
+                codes.push(num);
+            }
+        }
+    }
+    codes.sort();
+    let max_nvcc_code = *codes.last().expect("no gpu codes parsed from nvcc");
+    (codes, max_nvcc_code)
+}
+
+/// Validate that all requested compute capabilities are supported by the installed nvcc.
+fn validate_compute_caps(caps: &[usize]) {
+    let (supported, max_code) = supported_nvcc_codes();
+    for &cap in caps {
+        if !supported.contains(&cap) {
+            panic!("nvcc cannot target gpu arch {cap}. Available nvcc targets are {supported:?}.");
+        }
+        if cap > max_code {
+            panic!(
+                "CUDA compute cap {cap} is higher than the highest gpu code from nvcc {max_code}"
+            );
+        }
+    }
+}
+
+/// Try to resolve multiple compute capabilities from the `CUDA_COMPUTE_CAPS` env var.
+///
+/// - `CUDA_COMPUTE_CAPS=75,80,86,89` — explicit list
+/// - `CUDA_COMPUTE_CAPS=all` — expands to [`DEFAULT_COMPUTE_CAPS`]
+/// - Not set — returns `None` (falls through to single-cap resolution)
+fn resolve_compute_caps_env() -> Option<Vec<usize>> {
+    println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAPS");
+
+    let caps_str = std::env::var("CUDA_COMPUTE_CAPS").ok()?;
+
+    let mut caps = if caps_str.eq_ignore_ascii_case("all") {
+        DEFAULT_COMPUTE_CAPS.to_vec()
+    } else {
+        caps_str
+            .split(',')
+            .map(|s| {
+                s.trim()
+                    .parse::<usize>()
+                    .unwrap_or_else(|_| panic!("Invalid compute cap '{s}' in CUDA_COMPUTE_CAPS"))
+            })
+            .collect()
+    };
+
+    caps.sort();
+    caps.dedup();
+
+    assert!(
+        !caps.is_empty(),
+        "CUDA_COMPUTE_CAPS is set but contains no valid compute capabilities"
+    );
+
+    #[cfg(not(feature = "ci-check"))]
+    validate_compute_caps(&caps);
+
+    // Expose resolved CC list to downstream crates
+    let caps_env = caps
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    println!("cargo:rustc-env=CUDA_COMPUTE_CAPS={caps_env}");
+
+    Some(caps)
+}
+
 fn compute_cap() -> Result<usize, Error> {
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
 
@@ -495,20 +725,16 @@ fn compute_cap() -> Result<usize, Error> {
             .parse::<usize>()
             .expect("Could not parse code")
     } else {
-        // Use nvidia-smi to get the current compute cap
-        let out = std::process::Command::new("nvidia-smi")
-                .arg("--query-gpu=compute_cap")
-                .arg("--format=csv")
-                .output()
-                .expect("`nvidia-smi` failed. Ensure that you have CUDA installed and that `nvidia-smi` is in your PATH.");
-        let out = std::str::from_utf8(&out.stdout).expect("stdout is not a utf8 string");
-        let mut lines = out.lines();
-        assert_eq!(lines.next().expect("missing line in stdout"), "compute_cap");
-        let cap = lines
-            .next()
-            .expect("missing line in stdout")
-            .replace('.', "");
-        let cap = cap.parse::<usize>().expect("cannot parse as int {cap}");
+        // Auto-detect via CUDA driver API (same as cuda-diagnostic).
+        // Dynamically loads libcuda/nvcuda.dll and queries compute capability
+        // directly from the GPU — no nvidia-smi dependency.
+        let cap = detect_cc_from_cuda_driver().unwrap_or_else(|| {
+            println!(
+                "cargo:warning=Could not auto-detect CUDA compute capability from driver. \
+                 Defaulting to sm_80 (Ampere). Set CUDA_COMPUTE_CAP for Turing (75) GPUs."
+            );
+            80
+        });
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={cap}");
         cap
     };
@@ -549,4 +775,51 @@ fn compute_cap() -> Result<usize, Error> {
     }
 
     Ok(compute_cap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gencode_args_single() {
+        let args = gencode_args(&[86]);
+        assert_eq!(
+            args,
+            vec![
+                "-gencode=arch=compute_86,code=sm_86",
+                "-gencode=arch=compute_86,code=compute_86",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gencode_args_multiple() {
+        let args = gencode_args(&[75, 80, 86, 89]);
+        assert_eq!(
+            args,
+            vec![
+                "-gencode=arch=compute_75,code=sm_75",
+                "-gencode=arch=compute_80,code=sm_80",
+                "-gencode=arch=compute_86,code=sm_86",
+                "-gencode=arch=compute_89,code=sm_89",
+                "-gencode=arch=compute_89,code=compute_89", // PTX fallback for highest
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gencode_args_all_default() {
+        let args = gencode_args(DEFAULT_COMPUTE_CAPS);
+        assert_eq!(args.len(), 6); // 5 SASS + 1 PTX fallback
+        assert_eq!(
+            args.last().unwrap(),
+            "-gencode=arch=compute_90,code=compute_90"
+        );
+    }
+
+    #[test]
+    fn test_default_compute_caps() {
+        assert_eq!(DEFAULT_COMPUTE_CAPS, &[75, 80, 86, 89, 90]);
+    }
 }
